@@ -1,42 +1,75 @@
-# ADR-005: Role-Based Access Control (RBAC) for Authentication
+ADR-005: Role-Based Access Control (RBAC) for Authentication
 
-- **Status:** Draft
-- **Date:** 2026-10-12
-- **Deciders:** Team
+Status: Draft
+Date: 2026-10-12
+Deciders: Team Three
 
-## Context
+Context and Problem
 
-MedConnect has two main types of users: patients and medical staff. Each type needs access to different features and information.
+MedConnect has two main types of users: patients and medical staff. Each type needs different permissions to access the system.
 
-Patients should be able to request consultations and view their own information. Medical staff should be able to attend patients and access authorized medical records.
+Patients should be able to request consultations, register symptoms, and view their own information. Medical staff should be able to attend patients, manage consultations, and access authorized medical records.
 
-The system needs a simple and secure way to manage these permissions and prevent unauthorized access to medical information.
+Since MedConnect handles sensitive medical information, allowing all users to access the same functionalities could create security and privacy risks.
 
-## Decision
+The new architecture needs a simple and secure authentication and authorization mechanism that separates user permissions and prevents unauthorized access.
 
-Implement **Role-Based Access Control (RBAC)** to manage authentication and authorization in MedConnect.
+Considered Alternatives
 
-- Users must log in before accessing protected features.
-- Each user has an assigned role: PATIENT or MEDICAL_STAFF.
-- Patients can request consultations and view their own information.
-- Medical staff can manage consultations and access authorized medical records.
-- The backend validates user roles before allowing access to protected endpoints.
-- Users cannot access features that do not belong to their assigned role.
+Alternative 1: No Role Separation
 
-## Alternatives Considered
+All authenticated users have access to the same functionalities. This approach is simple but creates security risks because patients could access medical staff functions or information they should not see.
 
-| Option | Why not (draft) |
-|---|---|
-| No role separation | Users could access features or information they should not see |
-| Individual permissions for every user | More difficult to manage and maintain as the system grows |
-| Role-Based Access Control (RBAC) | Selected because it is simple, secure, and easy to implement |
+Alternative 2: Individual Permissions for Each User
 
-## Consequences
+Permissions are assigned separately to every user. This provides flexibility but becomes difficult to manage and maintain as the number of users increases.
 
-- (+) Improves security by restricting access based on user roles.
-- (+) Prevents patients from accessing medical staff functions.
-- (+) Protects medical information from unauthorized access.
-- (+) Makes permissions easier to manage and maintain.
-- (+) Allows new roles to be added in the future.
-- (-) Requires role validation in protected endpoints.
-- (-) Permissions must be updated when new features are added.
+Alternative 3: Role-Based Access Control (RBAC)
+
+Users are assigned a role, such as PATIENT or MEDICAL_STAFF, and permissions are defined according to that role. This approach simplifies permission management and provides better control over access to protected resources.
+
+Decision
+
+Adopt Role-Based Access Control (RBAC) to manage user permissions in MedConnect.
+
+User Authentication: All users must log in before accessing protected features. The system verifies their identity before allowing access.
+
+Role Assignment: Each user is assigned a role: PATIENT or MEDICAL_STAFF.
+
+Patient Permissions: Patients can request consultations, register symptoms, and view their own medical information.
+
+Medical Staff Permissions: Medical staff can attend patients, manage consultations, access authorized medical records, and issue prescriptions.
+
+Backend Authorization: The backend validates the user’s role before allowing access to protected endpoints.
+
+Data Protection: Users can only access medical information they are authorized to view, including verification of access to specific patient records.
+
+Trade-offs
+
+Positives (What we gain):
+
+Improved Security: Users can only access functionalities allowed by their assigned roles.
+
+Medical Data Protection: Helps prevent unauthorized access to sensitive patient information.
+
+Simple Permission Management: Permissions are managed by roles instead of individually for every user.
+
+Easy Maintenance: New users can receive the appropriate permissions by assigning them a role.
+
+Scalability: Additional roles can be introduced in the future if the system requires them.
+
+Negatives (Risks / What we lose):
+
+Role Validation Required: Protected endpoints must verify user permissions. Mitigation: implement centralized authorization checks.
+
+Permission Updates: When new features are added, role permissions may need to be updated. Mitigation: maintain a clear permission configuration.
+
+Limited Flexibility: Some users may require specific permissions beyond their general role. Mitigation: complement role validation with resource-level authorization when necessary.
+
+Final Justification
+
+Role-Based Access Control (RBAC) is the selected solution because it provides a simple, secure, and maintainable way to separate patients and medical staff permissions.
+
+It helps protect sensitive medical information, prevents unauthorized access to system functionalities, and makes user management easier.
+
+For MedConnect, RBAC is an appropriate architectural decision because it satisfies the authentication and authorization requirements without introducing unnecessary complexity.
