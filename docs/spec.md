@@ -502,7 +502,7 @@ Conventions for all endpoints:
 **POST /queue/claims**
 - **Authentication:** Bearer JWT, role `MEDICAL_STAFF` with a `doctorId` claim. Header `Idempotency-Key` required (a retry with the same key returns the same assignment).
 - **Request body:** none. Optional query `waitSeconds` (0 to 30) for long-polling when all queues are empty.
-- **Behavior:** an available doctor **pulls** the next patient. Strict order: HIGH, then MEDIUM, then LOW, FIFO inside each queue. The claim is atomic: one patient can be claimed by only one doctor.
+- **Behavior:** an available doctor **pulls** the next patient. A single atomic Redis script pops the oldest entry from HIGH, then MEDIUM, then LOW (FIFO by `requestedAt` inside each level), so one patient can be claimed by only one doctor. The patient moves to a claimed set with a **lease** (default 30 s). The lease is confirmed once `PatientAssigned` is committed to the outbox. A recovery job returns expired leases to their original queue, keeping the original `requestedAt`.
 - **Responses:**
 
 | Status | Meaning |
@@ -767,6 +767,7 @@ Conventions for all endpoints:
 Messaging conventions for all events:
 
 - Broker: RabbitMQ. Domain exchange `medconnect.events` (topic, durable). Pharmacy exchange `medconnect.pharmacy` (topic, durable), isolated from the domain exchange.
+- Waiting queues: the HIGH, MEDIUM and LOW queues are **Redis sorted sets** owned by care-queue-service (member = `consultationId`, score = original `requestedAt`). RabbitMQ transports domain events only and does not hold the waiting queues.
 - Routing key: `<aggregate>.<event>` in kebab-case. Queue name: `<consumer-service>.<event-name>`. Each consumer queue is durable and has its own dead-letter queue `<queue>.dlq`.
 - `audit-service` consumes every event through queue `audit.all` (binding `#`).
 - Delivery: at-least-once. Producers use the **transactional outbox** (the event is written in the same database transaction as the state change and then relayed). Messages are persistent and publisher confirms are enabled.
@@ -847,7 +848,7 @@ updatedAt: date-time
 **PatientTriaged**
 - **Producer:** triage-service
 - **Consumers:** care-queue-service, consultation-service, audit-service
-- **Queue / topic:** routing key `triage.patient-triaged.<high|medium|low>`. Queues `care-queue.high`, `care-queue.medium`, `care-queue.low` (one per priority, bound to the matching routing key) and `consultation.patient-triaged` (binding `triage.patient-triaged.*`).
+- **Queue / topic:** routing key `triage.patient-triaged`, queues `care-queue.patient-triaged` and `consultation.patient-triaged`
 - **Payload schema:**
 ```yaml
 consultationId: uuid
@@ -860,7 +861,7 @@ reason: INITIAL | SYMPTOMS_UPDATED
 requestedAt: date-time      # original request time (FIFO key)
 triagedAt: date-time
 ```
-- **Delivery guarantees:** emitted for the initial triage and every automatic re-triage; ordering per `consultationId`; idempotent by `eventId`; consumers discard the event if `triageVersion` is not greater than the stored one; 5 retries, then DLQ of each queue.
+- **Delivery guarantees:** emitted for the initial triage and every automatic re-triage; ordering per `consultationId`; idempotent by `eventId`; care-queue-service inserts the patient into the Redis sorted set of the given `priority` using `requestedAt` as score, and discards the event if `triageVersion` is not greater than the stored one; 5 retries, then DLQ.
 
 **PriorityOverridden**
 - **Producer:** triage-service
@@ -878,7 +879,7 @@ reason: string
 requestedAt: date-time
 overriddenAt: date-time
 ```
-- **Delivery guarantees:** audited event; ordering per `consultationId`; idempotent by `eventId`; stale versions are ignored; 5 retries, then DLQ.
+- **Delivery guarantees:** audited event; ordering per `consultationId`; idempotent by `eventId`; care-queue-service applies it as an atomic move (Lua script: `triageVersion` check, remove from the old sorted set, insert into the new one keeping the original score), and stale versions are ignored; 5 retries, then DLQ.
 
 **PatientEnqueued**
 - **Producer:** care-queue-service
@@ -894,7 +895,7 @@ triageVersion: integer
 requestedAt: date-time
 enqueuedAt: date-time
 ```
-- **Delivery guarantees:** emitted only after the atomic move completes, so the patient is never in two queues; ordering per `consultationId`; idempotent by `eventId`; 5 retries, then DLQ.
+- **Delivery guarantees:** emitted only after the atomic Redis move completes, so the patient is never in two queues; ordering per `consultationId`; idempotent by `eventId`; 5 retries, then DLQ.
 
 **PatientAssigned**
 - **Producer:** care-queue-service
@@ -908,7 +909,7 @@ doctorId: uuid
 priority: HIGH | MEDIUM | LOW
 assignedAt: date-time
 ```
-- **Delivery guarantees:** exactly one event per successful atomic claim; ordering per `consultationId`; idempotent by `eventId`; 5 retries, then DLQ.
+- **Delivery guarantees:** emitted once per successful atomic claim, after the claim is confirmed (see the lease in `POST /queue/claims`); ordering per `consultationId`; idempotent by `eventId`; 5 retries, then DLQ.
 
 **DoctorBecameAvailable**
 - **Producer:** scheduling-service
@@ -996,7 +997,7 @@ noShowAt: date-time
 
 **PrescriptionIssued**
 - **Producer:** prescription-service (through the transactional outbox)
-- **Consumers:** pharmacy platform (external; `mock-pharmacy-consumer` in Wave 2), audit-service
+- **Consumers:** pharmacy platform (external; `mock-pharmacy-consumer`), audit-service
 - **Queue / topic:** exchange `medconnect.pharmacy`, routing key `prescription.issued`, queue `pharmacy.prescriptions`, DLQ `pharmacy.prescriptions.dlq`
 - **Payload schema:**
 ```yaml
@@ -1048,7 +1049,7 @@ failedAt: date-time
 **Integration contract: Pharmacy platform (third party)**
 - **Nature:** independent third-party system, treated like a payment gateway. MedConnect builds no pharmacy features and only publishes the `PrescriptionIssued` event defined above.
 - **Style:** asynchronous. Exchange `medconnect.pharmacy`, routing key `prescription.issued`, queue `pharmacy.prescriptions`. The payload contains only the data the pharmacy needs (identifiers and prescription items).
-- **Wave 2:** `mock-pharmacy-consumer` consumes the queue, validates the payload schema, logs `eventId` and `prescriptionId`, and acknowledges.
+- `mock-pharmacy-consumer` consumes the queue, validates the payload schema, logs `eventId` and `prescriptionId`, and acknowledges.
 - **Failure handling:** pharmacy down means retries with exponential backoff (5 s, 30 s, 2 min, 10 min, 1 h). After 5 failed attempts the message moves to `pharmacy.prescriptions.dlq`, the prescription `deliveryStatus` becomes `DEAD_LETTERED`, and an alert fires. Operators can replay the DLQ after recovery.
 - **Isolation:** an unavailable pharmacy never blocks prescription registration, consultations, triage or scheduling.
 
@@ -1075,12 +1076,12 @@ MedConnect is split into independent microservices following the bounded context
 | **identity-service** | Patient registration, login, token issuance and refresh, strict roles (`PATIENT`, `MEDICAL_STAFF`), JWKS publication. | `identity_db` | – | – |
 | **consultation-service** | Owns the `Consultation` aggregate and its state machine (including `CANCELLED` and `NO_SHOW`). Receives consultation requests, handles symptom updates, cancellation, join, start and completion. Integrates with the video provider (session creation). Source of truth for consultation state. | `consultation_db` | `ConsultationRequested`, `SymptomsUpdated`, `ConsultationStarted`, `ConsultationCompleted`, `ConsultationCancelled`, `ConsultationNoShow` | `PatientTriaged`, `PriorityOverridden`, `PatientEnqueued`, `PatientAssigned` |
 | **triage-service** | Rule-based automatic triage (HIGH, MEDIUM, LOW), re-triage when symptoms change, medical staff priority override. Stateless rule evaluation that scales horizontally. | `triage_db` | `PatientTriaged`, `PriorityOverridden` | `ConsultationRequested`, `SymptomsUpdated` |
-| **care-queue-service** | Maintains the three asynchronous priority queues, guarantees a patient is in exactly one queue, FIFO within a level, aging, and the atomic claim of the next patient by an available doctor (HIGH, then MEDIUM, then LOW). | `queue_store` (Redis) + `queue_db` | `PatientEnqueued`, `PatientAssigned` | `PatientTriaged`, `PriorityOverridden`, `ConsultationCancelled`, `DoctorBecameAvailable`, `DoctorBecameUnavailable` |
+| **care-queue-service** | Maintains the three priority queues as Redis sorted sets, guarantees a patient is in exactly one queue, FIFO within a level (score = original `requestedAt`), aging, and the atomic lease-based claim of the next patient by an available doctor (HIGH, then MEDIUM, then LOW). | Redis (sorted sets, working index; no relational DB) | `PatientEnqueued`, `PatientAssigned` | `PatientTriaged`, `PriorityOverridden`, `ConsultationCancelled`, `DoctorBecameAvailable`, `DoctorBecameUnavailable` |
 | **scheduling-service** | Doctor shifts and availability (`FREE`, `BUSY`, `OFFLINE`). It is not a patient calendar. Its availability drives the doctor pull of the care queue. | `scheduling_db` | `DoctorBecameAvailable`, `DoctorBecameUnavailable` | `PatientAssigned`, `ConsultationCompleted`, `ConsultationCancelled`, `ConsultationNoShow` |
 | **recording-service** | Independent microservice for querying consultation recordings. Receives provider callbacks, streams recordings to object storage asynchronously, stores only metadata, and serves metadata with pre-signed URLs. Fully isolated (bulkhead): its failure never affects triage or scheduling. | `recording_db` + object storage (S3 / MinIO) | `RecordingAvailable`, `RecordingFailed` | `ConsultationCompleted` |
 | **prescription-service** | Registers prescriptions and publishes `PrescriptionIssued` through a transactional outbox. | `prescription_db` | `PrescriptionIssued` | `ConsultationStarted`, `ConsultationCompleted` |
 | **audit-service** | Append-only store of all domain events (for example `PriorityOverridden`), for traceability and legal compliance. | `audit_db` (append-only) | – | All events (`#`) |
-| **mock-pharmacy-consumer** | Wave 2 stand-in for the third-party pharmacy platform. Receives and logs `PrescriptionIssued`. | – | – | `PrescriptionIssued` |
+| **mock-pharmacy-consumer** | stand-in for the third-party pharmacy platform. Receives and logs `PrescriptionIssued`. | – | – | `PrescriptionIssued` |
 
 Architectural rules:
 
@@ -1088,6 +1089,7 @@ Architectural rules:
 - Inter-service communication is asynchronous by default (events). Synchronous calls are limited to client-facing APIs and calls to external providers through an anti-corruption layer.
 - Every producer uses the transactional outbox. Every consumer is idempotent.
 - The recording workload runs in separate deployments with separate resource quotas. Recordings go to object storage and never to the disks of other services.
+- Waiting queues are Redis sorted sets, not broker queues. Redis is a rebuildable working index: after a loss, care-queue-service rebuilds it from the `WAITING` consultations (priority, `requestedAt`, `triageVersion`) provided by consultation-service through its snapshot or by republished events, never by reading its tables.
 
 ## 5. Requirements and Scenarios
 
@@ -1135,7 +1137,7 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 | 3 | `mainSymptom = FEVER` and `painLevel >= 7` | MEDIUM | `R3_FEVER_HIGH_PAIN` |
 | 4 | Anything else | LOW | `R4_DEFAULT` |
 
-- **R-F3-03:** The system SHALL maintain three separate asynchronous queues (HIGH, MEDIUM, LOW), and a patient SHALL be in exactly one queue at any time.
+- **R-F3-03:** The system SHALL maintain three separate priority queues (HIGH, MEDIUM, LOW), implemented as Redis sorted sets fed asynchronously by triage events, and a patient SHALL be in exactly one queue at any time.
 - **R-F3-04:** Medical staff SHALL be able to override the priority. The override SHALL emit `PriorityOverridden` and be audited.
 - **R-F3-05:** When symptoms are updated or the patient is reclassified, the patient SHALL move atomically to the new queue. Events with a lower `triageVersion` SHALL be ignored.
 
@@ -1156,7 +1158,7 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 
 - **R-F4-01:** An available doctor SHALL extract patients in strict order HIGH, then MEDIUM, then LOW.
 - **R-F4-02:** Within the same priority, patients SHALL be attended in arrival order (FIFO by `requestedAt`).
-- **R-F4-03:** A patient SHALL be claimed by exactly one doctor (atomic claim). Only doctors with status `FREE`, managed by scheduling-service, SHALL be able to claim.
+- **R-F4-03:** A patient SHALL be claimed by exactly one doctor (atomic claim with a lease). Only doctors with status `FREE`, managed by scheduling-service, SHALL be able to claim. An unconfirmed claim SHALL return the patient to the queue when the lease expires.
 - **R-F4-04:** Low-priority patients SHALL NOT wait indefinitely: a patient in LOW longer than the aging threshold (default 90 minutes, documented in an ADR) is promoted to MEDIUM keeping the original `requestedAt`. Aging SHALL NOT promote to HIGH.
 - **R-F4-05:** If an assigned patient does not connect within the timeout (default 300 s), the consultation SHALL become `NO_SHOW` and the doctor SHALL return to `FREE`.
 - **R-F4-06:** Consultation state transitions SHALL follow `REQUESTED -> TRIAGED -> WAITING -> ASSIGNED -> IN_PROGRESS -> COMPLETED`, with `CANCELLED` and `NO_SHOW` as exits. Any other transition SHALL be rejected with `409`.
@@ -1174,12 +1176,13 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 | S-F4-09 | **WHEN** an assigned patient does not call `/join` within the no-show timeout **THEN** the consultation becomes `NO_SHOW`, `ConsultationNoShow` is emitted and the doctor returns to `FREE`. |
 | S-F4-10 | **WHEN** a patient cancels while `WAITING` **THEN** the patient is removed from the queue, the status becomes `CANCELLED` and the patient cannot be claimed afterward. |
 | S-F4-11 | **WHEN** the scheduling data of a doctor changes (shift started or consultation completed) **THEN** `DoctorBecameAvailable` is emitted and the doctor can pull the next patient. |
+| S-F4-12 | **WHEN** a claim is not confirmed (the service fails before `PatientAssigned` is committed) and the lease expires **THEN** the patient returns to their original queue with their original `requestedAt` and is not lost. |
 
 **Feature 5 – Asynchronous registration of prescriptions emitting an event to an external pharmacy platform**
 
 - **R-F5-01:** Prescription registration SHALL NOT depend synchronously on the pharmacy platform.
 - **R-F5-02:** `PrescriptionIssued` SHALL be published if and only if the prescription was persisted (transactional outbox).
-- **R-F5-03:** The event contract SHALL follow Section 3. Delivery SHALL use retries with backoff and a dead-letter queue. For Wave 2 a mock consumer that receives and logs the event is sufficient.
+- **R-F5-03:** The event contract SHALL follow Section 3. Delivery SHALL use retries with backoff and a dead-letter queue. A mock consumer that receives and logs the event is sufficient.
 - **R-F5-04:** A prescription SHALL NOT be a consultation state. It SHALL be a separate `PrescriptionIssued` event.
 
 | ID | Scenario |
