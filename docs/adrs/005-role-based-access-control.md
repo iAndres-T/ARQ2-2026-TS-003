@@ -1,6 +1,6 @@
 # ADR-005: Role-Based Access Control (RBAC) for Authentication
 
-- **Status:** Draft
+- **Status:** Approved
 - **Date:** 2026-10-12
 - **Deciders:** Team Three
 
