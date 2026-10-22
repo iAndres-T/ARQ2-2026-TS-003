@@ -1,8 +1,10 @@
 # MedConnect – API and Contract Specification (OpenSpec)
 
+In the legacy architecture, MedConnect relied on a single centralized SQL Server database to store medical records, video call resource management, and doctor scheduling, while queueing patients in a traditional FIFO table and downloading, processing, and storing external video call recordings on those same servers. During the winter peak—when demand grows tenfold to up to 20,000 waiting patients and 500 triage requests per second with only about 500 doctors on shift—this extreme coupling caused the database to collapse, placed critical patients (such as a patient reporting severe chest pain from a heart attack) in a FIFO queue behind 200 people with a mild cold for hours, and allowed video recording network or disk saturation to crash the entire scheduling module, leaving doctors unable to work. This specification defines the target decoupled microservices contracts and event-driven architecture (aligned with **ADR-001** through **ADR-005**) that resolve these failure modes across the five mandatory features.
+
 ## 1. Data Schemas of the Main Domains
 
-OpenAPI 3.0 component schemas shared by the APIs and the event payloads.
+OpenAPI 3.0 component schemas shared by the APIs and the event payloads. These models replace the centralized SQL Server tables by separating the consultation lifecycle and structured symptom reporting (`SymptomReport`) for deterministic triage (**ADR-001**), prioritized queue entries (`HIGH`, `MEDIUM`, `LOW`) that preserve original arrival time (`requestedAt`) for fair FIFO ordering and aging (**ADR-004**), doctor shift and availability management (`Shift`, `DoctorAvailability`), outbox-backed prescriptions (`Prescription`, **ADR-002**), and lightweight recording metadata (`RecordingMetadata`) decoupled from raw video files (**ADR-003**).
 
 ```yaml
 openapi: 3.0.3
@@ -195,7 +197,7 @@ components:
 Conventions for all endpoints:
 
 - Base path: `/api/v1`, exposed through the API Gateway.
-- Authentication: `Authorization: Bearer <JWT>` (RS256, validated by every service against the identity-service JWKS). Claims: `sub`, `role` (`PATIENT` or `MEDICAL_STAFF`), `doctorId` (doctors only), `scopes` (`scheduling:manage`, `recordings:read`, `audit:read`). For patients, `sub` is the `patientId`. The patient identity always comes from the token, never from the request body.
+- Authentication: `Authorization: Bearer <JWT>` (RS256, validated locally by the API Gateway and every service against the identity-service JWKS without synchronous calls to `identity-service`, per **ADR-005**). Claims: `sub`, `role` (`PATIENT` or `MEDICAL_STAFF`), `doctorId` (doctors only), `scopes` (`scheduling:manage`, `recordings:read`, `audit:read`). The API Gateway enforces coarse-grained route access by role, while each service enforces fine-grained ownership and assigned doctor–patient relationship rules using local event-driven projections. For patients, `sub` is the `patientId`. The patient identity always comes from the token, never from the request body.
 - Errors: RFC 7807 `application/problem+json` using the `Problem` schema.
 - IDs are UUID v4. Timestamps are ISO-8601 UTC.
 - `Idempotency-Key` header is **required** on the POST endpoints that state it. The original response is replayed for the same key for 24 h.
@@ -292,7 +294,7 @@ Conventions for all endpoints:
   "description": "Pressure in the chest radiating to the left arm"
 }
 ```
-- **Behavior:** validates, persists the consultation as `REQUESTED`, writes `ConsultationRequested` to the outbox and returns immediately. Triage runs asynchronously.
+- **Behavior:** validates, persists the consultation as `REQUESTED`, writes `ConsultationRequested` to the transactional outbox (**ADR-002**) and returns `202` immediately so triage runs asynchronously. This replaces the legacy synchronous SQL table insertion that collapsed under winter peaks of 500 triage requests per second.
 - **Responses:**
 
 | Status | Meaning |
@@ -502,7 +504,7 @@ Conventions for all endpoints:
 **POST /queue/claims**
 - **Authentication:** Bearer JWT, role `MEDICAL_STAFF` with a `doctorId` claim. Header `Idempotency-Key` required (a retry with the same key returns the same assignment).
 - **Request body:** none. Optional query `waitSeconds` (0 to 30) for long-polling when all queues are empty.
-- **Behavior:** an available doctor **pulls** the next patient. A single atomic Redis script pops the oldest entry from HIGH, then MEDIUM, then LOW (FIFO by `requestedAt` inside each level), so one patient can be claimed by only one doctor. The patient moves to a claimed set with a **lease** (default 30 s). The lease is confirmed once `PatientAssigned` is committed to the outbox. A recovery job returns expired leases to their original queue, keeping the original `requestedAt`.
+- **Behavior:** replaces the legacy single FIFO SQL table—where a patient with severe chest pain waited hours behind 200 mild cold cases—with a prioritized pull mechanism (**ADR-001**, **ADR-004**). An available (`FREE`) doctor among the ~500 on shift **pulls** the next patient. A single atomic Redis Lua script pops the oldest entry from HIGH, then MEDIUM, then LOW (strict priority between levels, FIFO by original `requestedAt` inside each level), ensuring a critical patient always bypasses mild cases and can be claimed by only one doctor. The patient moves to a claimed set with a **lease** (default 30 s), which is confirmed once `PatientAssigned` is committed to the outbox. A recovery job returns expired leases to their original queue, keeping the original `requestedAt`.
 - **Responses:**
 
 | Status | Meaning |
@@ -556,7 +558,7 @@ Conventions for all endpoints:
 ```json
 { "status": "FREE" }
 ```
-- **Behavior:** the doctor sets themselves `FREE` or `OFFLINE`. `BUSY` is system-managed (set on `PatientAssigned`). After `ConsultationCompleted` or `ConsultationNoShow` the doctor returns to `FREE` automatically if the shift is active and the doctor did not go `OFFLINE`.
+- **Behavior:** the scheduling module manages doctors' shifts and real-time availability (`FREE`, `BUSY`, `OFFLINE`) to coordinate who can pull patients from the priority queues, running completely isolated from video recording workloads so scheduling never crashes when recordings are processed. The doctor sets themselves `FREE` or `OFFLINE`. `BUSY` is system-managed (set on `PatientAssigned`). After `ConsultationCompleted` or `ConsultationNoShow` the doctor returns to `FREE` automatically if the shift is active and the doctor did not go `OFFLINE`.
 - **Responses:**
 
 | Status | Meaning |
@@ -639,7 +641,7 @@ Conventions for all endpoints:
   "notes": "Follow up with cardiology within 48 hours"
 }
 ```
-- **Behavior:** in one local transaction the service stores the prescription and writes `PrescriptionIssued` to the outbox, then returns. Delivery to the pharmacy is asynchronous, so a pharmacy outage never fails this call.
+- **Behavior:** in one local database transaction the service stores the prescription and writes `PrescriptionIssued` to the transactional outbox (**ADR-002**), then returns `202` immediately. Delivery to the external third-party pharmacy platform is asynchronous, eliminating both double-write inconsistencies and availability coupling so a pharmacy outage or latency spike during peak demand never blocks doctors from completing consultations.
 - **Responses:**
 
 | Status | Meaning |
@@ -686,7 +688,7 @@ Conventions for all endpoints:
 **GET /consultations/{consultationId}/recording**
 - **Authentication:** Bearer JWT, role `MEDICAL_STAFF` with scope `recordings:read`
 - **Request body:** none
-- **Behavior:** served by the independent `recording-service`. Returns metadata only. `downloadUrl` is a pre-signed object storage URL (TTL 300 s), present only when `status = AVAILABLE`.
+- **Behavior:** served by the independent `recording-service` (**ADR-003**), resolving the legacy bottleneck where downloading and storing video files on central servers saturated disk and network I/O and crashed the scheduling module. Returns lightweight metadata only from `recording_db` after verifying role and resource authorization (**ADR-005**). `downloadUrl` is a pre-signed object storage URL (TTL 300 s), present only when `status = AVAILABLE`, so media playback never proxies raw video bytes through MedConnect application nodes.
 - **Responses:**
 
 | Status | Meaning |
@@ -717,7 +719,7 @@ Conventions for all endpoints:
 ```json
 { "type": "recording.completed", "sessionId": "abc123", "providerRecordingId": "rec_889", "durationSeconds": 2230, "downloadUrl": "https://video.provider.example/recordings/rec_889?token=..." }
 ```
-- **Behavior:** receives provider callbacks (`recording.completed`, `recording.failed`). Processing is asynchronous.
+- **Behavior:** receives asynchronous provider callbacks (`recording.completed`, `recording.failed`) once the external video provider finishes processing and uploading the recording to Object Storage (**ADR-003**). Because video processing can finish several minutes after a consultation ends, metadata persistence is triggered by this webhook rather than blocking `ConsultationCompleted`.
 - **Responses:**
 
 | Status | Meaning |
@@ -766,11 +768,11 @@ Conventions for all endpoints:
 
 Messaging conventions for all events:
 
-- Broker: RabbitMQ. Domain exchange `medconnect.events` (topic, durable). Pharmacy exchange `medconnect.pharmacy` (topic, durable), isolated from the domain exchange.
-- Waiting queues: the HIGH, MEDIUM and LOW queues are **Redis sorted sets** owned by care-queue-service (member = `consultationId`, score = original `requestedAt`). RabbitMQ transports domain events only and does not hold the waiting queues.
-- Routing key: `<aggregate>.<event>` in kebab-case. Queue name: `<consumer-service>.<event-name>`. Each consumer queue is durable and has its own dead-letter queue `<queue>.dlq`.
+- Broker: RabbitMQ. Domain exchange `medconnect.events` (topic, durable) buffers burst traffic (up to 500 triage requests/s during winter peaks) and decouples services. Pharmacy exchange `medconnect.pharmacy` (topic, durable), isolated from the domain exchange (**ADR-002**).
+- Waiting queues: the HIGH, MEDIUM and LOW queues are **Redis sorted sets** owned by care-queue-service (member = `consultationId`, score = original `requestedAt`), per **ADR-001** and **ADR-004**. RabbitMQ transports domain events only and does not hold the waiting queues, because a broker queue only supports consuming from its head and cannot atomically move, re-rank, or remove a specific patient among 20,000 waiting entries without losing their original arrival timestamp.
+- Routing key: `<aggregate>.<event>` in kebab-case. Queue name: `<consumer-service>.<event-name>`. Each consumer queue is durable and has its own dead-letter queue `<queue>.dlq`, enforcing messaging-level bulkhead isolation so a slow or failing consumer (such as `recording-service`, **ADR-003**) never backpressures triage or scheduling.
 - `audit-service` consumes every event through queue `audit.all` (binding `#`).
-- Delivery: at-least-once. Producers use the **transactional outbox** (the event is written in the same database transaction as the state change and then relayed). Messages are persistent and publisher confirms are enabled.
+- Delivery: at-least-once. Producers use the **transactional outbox** (**ADR-002**: the event is written in the same database transaction as the state change and then relayed by a background worker using `SELECT ... FOR UPDATE SKIP LOCKED`), preventing double-write inconsistencies. Messages are persistent and publisher confirms are enabled.
 - Ordering: guaranteed per aggregate (`aggregateId`), not across aggregates. Consumers tolerate out-of-order delivery by comparing `aggregateVersion` or `triageVersion`.
 - Idempotency: every consumer deduplicates by `eventId` (processed-events table). A duplicate is acknowledged and skipped.
 - Retries: exponential backoff (5 s, 30 s, 2 min, 10 min, 1 h), maximum 5 attempts. After the last attempt the message goes to the consumer's DLQ and an alert is raised.
@@ -1061,14 +1063,14 @@ failedAt: date-time
 
 **Integration contract: Object storage (S3 / MinIO)**
 - **Bucket:** `medconnect-recordings` (private, versioning enabled, server-side encryption). Key pattern `recordings/{yyyy}/{mm}/{consultationId}/{recordingId}.mp4`.
-- **Write path:** recording-service streams the file from the provider to the bucket (multipart upload, or direct transfer when supported). Recordings are never stored on the disks of business servers. Local temporary space is bounded and ephemeral.
-- **Read path:** pre-signed URLs only (TTL 300 s), issued by `GET /consultations/{consultationId}/recording`.
+- **Write path:** per **ADR-003**, the external video provider uploads the recording directly to the S3-compatible bucket (or `recording-service` streams it asynchronously when direct upload is not used) and notifies `recording-service` via webhook. Recordings are never stored on the disks of business servers, eliminating the disk and network saturation that crashed the legacy scheduling module. A periodic reconciliation job backfills metadata if a provider webhook is missed.
+- **Read path:** pre-signed URLs only (TTL 300 s), issued by `GET /consultations/{consultationId}/recording` after enforcing role-based and resource-level authorization (**ADR-005**).
 - **Database:** only metadata (`recordingId`, `consultationId`, `url`, `durationSeconds`, `recordedAt`, `status`, `sizeBytes`, `checksumSha256`).
-- **Isolation:** dedicated deployment with its own CPU, memory, disk and network quotas, a concurrency cap per instance and its own consumer queue.
+- **Isolation:** two-level bulkhead (**ADR-003**) with a dedicated deployment (own CPU, memory, disk and network quotas, concurrency cap per instance) and its own dedicated RabbitMQ consumer queue.
 
 ## 4. Overview: Services and Responsibilities
 
-MedConnect is split into independent microservices following the bounded contexts of the DDD analysis. The Core Domain is triage and prioritized care queue management (`triage-service` and `care-queue-service`).
+MedConnect is split into independent microservices following the bounded contexts of the DDD analysis, replacing the legacy centralized SQL Server monolith that coupled medical records, video recording management, and shift scheduling on the same servers. The Core Domain is triage and prioritized care queue management (`triage-service` and `care-queue-service`, **ADR-001**, **ADR-004**), designed to absorb winter peak loads (500 triage requests/s and up to 20,000 waiting patients with ~500 doctors on shift) while guaranteeing that critical patients never wait behind mild cases and that secondary workloads like video recordings (**ADR-003**) or external pharmacy delivery (**ADR-002**) never impair clinical availability.
 
 | Service | Responsibility | Owned data store | Publishes | Consumes |
 |---|---|---|---|---|
@@ -1097,6 +1099,8 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 
 **Feature 1 – Authentication with strict roles (Patients vs. Medical Staff)**
 
+Enforces centralized RS256 JWT authentication and two-tier RBAC authorization—coarse-grained route checks at the API Gateway and fine-grained ownership/assignment validation via local projections inside each service—to protect sensitive medical information without synchronous cross-service calls (**ADR-005**).
+
 - **R-F1-01:** The system SHALL authenticate users and issue JWTs containing exactly one role: `PATIENT` or `MEDICAL_STAFF`.
 - **R-F1-02:** Every service SHALL validate the JWT signature and enforce role and ownership rules. A patient's identity SHALL come from the token, never from the request body.
 - **R-F1-03:** Patients SHALL NOT access staff-only operations (override, claim, availability, shifts, prescriptions, recordings, audit). Staff SHALL NOT create consultations.
@@ -1112,6 +1116,8 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 
 **Feature 2 – Independent microservice dedicated to querying recordings**
 
+Eliminates the extreme coupling of the legacy architecture—where downloading, processing, and storing consultation video recordings on central servers saturated network and disk I/O and crashed the scheduling module—by isolating consultation recording queries and asynchronous metadata handling in `recording-service` backed by Object Storage and two-level bulkhead isolation (**ADR-003**, **ADR-005**).
+
 - **R-F2-01:** Consultation recordings SHALL be served by an independent service (`recording-service`) with its own deployment, resources and database.
 - **R-F2-02:** Recording files SHALL be stored in object storage and processed asynchronously. Only metadata (consultation ID, URL, duration, date) SHALL be stored in the database.
 - **R-F2-03:** Only `MEDICAL_STAFF` with scope `recordings:read` SHALL query recordings, and downloads SHALL use short-lived pre-signed URLs.
@@ -1126,6 +1132,8 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 | S-F2-05 | **WHEN** the video provider delivers the same webhook twice **THEN** the second delivery returns `409` and no duplicate recording is created. |
 
 **Feature 3 – Automatic Triage Engine with prioritized asynchronous queues**
+
+Replaces the legacy centralized SQL Server FIFO table that collapsed under winter peaks (500 triage requests/s and 20,000 waiting patients) by decoupling consultation intake via the Transactional Outbox (**ADR-002**), evaluating symptoms deterministically in a horizontally scalable `triage-service`, and maintaining three separate priority queues (`HIGH`, `MEDIUM`, `LOW`) as Redis sorted sets (**ADR-001**).
 
 - **R-F3-01:** `POST /consultations` SHALL respond with `202` and process triage asynchronously, absorbing bursts of up to 500 requests per second.
 - **R-F3-02:** The triage engine SHALL classify each request as HIGH, MEDIUM or LOW with the following rule set `v1`, evaluated in order (the first match wins). The engine is rule-based (no AI/ML) and the free-text `description` is never used for classification.
@@ -1156,6 +1164,8 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 
 **Feature 4 – Doctor consumption mechanism respecting the highest criticality first**
 
+Solves the critical clinical failure where a patient suffering a heart attack (severe chest pain) waited hours behind 200 mild cold cases. Available (`FREE`) doctors among the ~500 on shift pull patients atomically in strict criticality order (`HIGH` → `MEDIUM` → `LOW`) with fair FIFO ordering by original `requestedAt` within each level and bounded waiting for `LOW` patients via threshold-based aging to `MEDIUM` (**ADR-001**, **ADR-004**).
+
 - **R-F4-01:** An available doctor SHALL extract patients in strict order HIGH, then MEDIUM, then LOW.
 - **R-F4-02:** Within the same priority, patients SHALL be attended in arrival order (FIFO by `requestedAt`).
 - **R-F4-03:** A patient SHALL be claimed by exactly one doctor (atomic claim with a lease). Only doctors with status `FREE`, managed by scheduling-service, SHALL be able to claim. An unconfirmed claim SHALL return the patient to the queue when the lease expires.
@@ -1179,6 +1189,8 @@ The keywords SHALL and SHALL NOT indicate mandatory behavior.
 | S-F4-12 | **WHEN** a claim is not confirmed (the service fails before `PatientAssigned` is committed) and the lease expires **THEN** the patient returns to their original queue with their original `requestedAt` and is not lost. |
 
 **Feature 5 – Asynchronous registration of prescriptions emitting an event to an external pharmacy platform**
+
+Decouples prescription issuance from the independent third-party pharmacy system using the Transactional Outbox pattern (**ADR-002**), preventing external pharmacy latency or downtime from blocking doctors and avoiding double-write data loss during peak traffic.
 
 - **R-F5-01:** Prescription registration SHALL NOT depend synchronously on the pharmacy platform.
 - **R-F5-02:** `PrescriptionIssued` SHALL be published if and only if the prescription was persisted (transactional outbox).
