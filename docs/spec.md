@@ -999,7 +999,7 @@ noShowAt: date-time
 
 **PrescriptionIssued**
 - **Producer:** prescription-service (through the transactional outbox)
-- **Consumers:** pharmacy platform (external; `mock-pharmacy-consumer`), audit-service
+- **Consumers:** pharmacy platform (external; `pharmacy-provider`), audit-service
 - **Queue / topic:** exchange `medconnect.pharmacy`, routing key `prescription.issued`, queue `pharmacy.prescriptions`, DLQ `pharmacy.prescriptions.dlq`
 - **Payload schema:**
 ```yaml
@@ -1051,7 +1051,7 @@ failedAt: date-time
 **Integration contract: Pharmacy platform (third party)**
 - **Nature:** independent third-party system, treated like a payment gateway. MedConnect builds no pharmacy features and only publishes the `PrescriptionIssued` event defined above.
 - **Style:** asynchronous. Exchange `medconnect.pharmacy`, routing key `prescription.issued`, queue `pharmacy.prescriptions`. The payload contains only the data the pharmacy needs (identifiers and prescription items).
-- `mock-pharmacy-consumer` consumes the queue, validates the payload schema, logs `eventId` and `prescriptionId`, and acknowledges.
+- `pharmacy-provider` consumes the queue, validates the payload schema, logs `eventId` and `prescriptionId`, and acknowledges.
 - **Failure handling:** pharmacy down means retries with exponential backoff (5 s, 30 s, 2 min, 10 min, 1 h). After 5 failed attempts the message moves to `pharmacy.prescriptions.dlq`, the prescription `deliveryStatus` becomes `DEAD_LETTERED`, and an alert fires. Operators can replay the DLQ after recovery.
 - **Isolation:** an unavailable pharmacy never blocks prescription registration, consultations, triage or scheduling.
 
@@ -1083,7 +1083,7 @@ MedConnect is split into independent microservices following the bounded context
 | **recording-service** | Independent microservice for querying consultation recordings. Receives provider callbacks, streams recordings to object storage asynchronously, stores only metadata, and serves metadata with pre-signed URLs. Fully isolated (bulkhead): its failure never affects triage or scheduling. | `recording_db` + object storage (S3 / MinIO) | `RecordingAvailable`, `RecordingFailed` | `ConsultationCompleted` |
 | **prescription-service** | Registers prescriptions and publishes `PrescriptionIssued` through a transactional outbox. | `prescription_db` | `PrescriptionIssued` | `ConsultationStarted`, `ConsultationCompleted` |
 | **audit-service** | Append-only store of all domain events (for example `PriorityOverridden`), for traceability and legal compliance. | `audit_db` (append-only) | – | All events (`#`) |
-| **mock-pharmacy-consumer** | stand-in for the third-party pharmacy platform. Receives and logs `PrescriptionIssued`. | – | – | `PrescriptionIssued` |
+| **pharmacy-provider** | stand-in for the third-party pharmacy platform. Receives and logs `PrescriptionIssued`. | – | – | `PrescriptionIssued` |
 
 Architectural rules:
 
