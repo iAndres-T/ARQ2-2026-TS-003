@@ -1,0 +1,35 @@
+{
+  "users": [
+    {
+      "name": "medconnect",
+      "password_hash": "Q5+6F1jOrLe52+f5t0GJMTdpPugsP6xoVEMcjQpVL60pkPDQ",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": ["administrator"]
+    }
+  ],
+  "vhosts": [{ "name": "/" }],
+  "permissions": [
+    { "user": "medconnect", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*" }
+  ],
+  "exchanges": [
+    { "name": "medconnect.events", "vhost": "/", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "medconnect.pharmacy", "vhost": "/", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "medconnect.pharmacy.dlx", "vhost": "/", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "medconnect.retry", "vhost": "/", "type": "headers", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "medconnect.retry.return", "vhost": "/", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {} }
+  ],
+  "queues": [
+    { "name": "retry.5s", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-message-ttl": 5000, "x-dead-letter-exchange": "medconnect.retry.return" } },
+    { "name": "retry.30s", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-message-ttl": 30000, "x-dead-letter-exchange": "medconnect.retry.return" } },
+    { "name": "retry.2m", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-message-ttl": 120000, "x-dead-letter-exchange": "medconnect.retry.return" } },
+    { "name": "retry.10m", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-message-ttl": 600000, "x-dead-letter-exchange": "medconnect.retry.return" } },
+    { "name": "retry.1h", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-message-ttl": 3600000, "x-dead-letter-exchange": "medconnect.retry.return" } }
+  ],
+  "bindings": [
+    { "source": "medconnect.retry", "vhost": "/", "destination": "retry.5s", "destination_type": "queue", "routing_key": "", "arguments": { "x-match": "all", "retry-tier": "5s" } },
+    { "source": "medconnect.retry", "vhost": "/", "destination": "retry.30s", "destination_type": "queue", "routing_key": "", "arguments": { "x-match": "all", "retry-tier": "30s" } },
+    { "source": "medconnect.retry", "vhost": "/", "destination": "retry.2m", "destination_type": "queue", "routing_key": "", "arguments": { "x-match": "all", "retry-tier": "2m" } },
+    { "source": "medconnect.retry", "vhost": "/", "destination": "retry.10m", "destination_type": "queue", "routing_key": "", "arguments": { "x-match": "all", "retry-tier": "10m" } },
+    { "source": "medconnect.retry", "vhost": "/", "destination": "retry.1h", "destination_type": "queue", "routing_key": "", "arguments": { "x-match": "all", "retry-tier": "1h" } }
+  ]
+}

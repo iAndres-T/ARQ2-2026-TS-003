@@ -1,0 +1,529 @@
+name: medconnect
+
+# Defaults are local test values; override them in .env (see .env.example).
+
+x-postgres: &postgres
+  image: postgres:16-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+  deploy:
+    resources:
+      limits:
+        cpus: "0.5"
+        memory: 256M
+
+services:
+  # --- Databases: one dedicated PostgreSQL instance per service (ADR-006) ---
+  identity-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: identity_db
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: ${IDENTITY_DB_PASSWORD:-identity}
+    volumes: [identity-db-data:/var/lib/postgresql/data]
+
+  consultation-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: consultation_db
+      POSTGRES_USER: consultation
+      POSTGRES_PASSWORD: ${CONSULTATION_DB_PASSWORD:-consultation}
+    volumes: [consultation-db-data:/var/lib/postgresql/data]
+
+  triage-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: triage_db
+      POSTGRES_USER: triage
+      POSTGRES_PASSWORD: ${TRIAGE_DB_PASSWORD:-triage}
+    volumes: [triage-db-data:/var/lib/postgresql/data]
+
+  scheduling-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: scheduling_db
+      POSTGRES_USER: scheduling
+      POSTGRES_PASSWORD: ${SCHEDULING_DB_PASSWORD:-scheduling}
+    volumes: [scheduling-db-data:/var/lib/postgresql/data]
+
+  prescription-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: prescription_db
+      POSTGRES_USER: prescription
+      POSTGRES_PASSWORD: ${PRESCRIPTION_DB_PASSWORD:-prescription}
+    volumes: [prescription-db-data:/var/lib/postgresql/data]
+
+  audit-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: audit_db
+      POSTGRES_USER: audit
+      POSTGRES_PASSWORD: ${AUDIT_DB_PASSWORD:-audit}
+      AUDIT_APP_PASSWORD: ${AUDIT_APP_PASSWORD:-audit_app}
+    volumes:
+      - audit-db-data:/var/lib/postgresql/data
+      - ./infra/audit-db/init:/docker-entrypoint-initdb.d:ro
+
+  recording-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: recording_db
+      POSTGRES_USER: recording
+      POSTGRES_PASSWORD: ${RECORDING_DB_PASSWORD:-recording}
+    volumes: [recording-db-data:/var/lib/postgresql/data]
+
+  # --- Shared infrastructure ---
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF per ADR-001; noeviction: queues/outbox must never be evicted, writes fail with an error instead; 300mb of 512M leaves copy-on-write headroom for AOF rewrite
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "300mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes: [redis-data:/data]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 64M
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    ports: ["15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - rabbitmq-data:/var/lib/rabbitmq
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # Official minio/minio images are no longer published; this is the last Bitnami build of MinIO (bundles mc).
+  minio:
+    image: bitnamilegacy/minio:2025.7.23
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-medconnect}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-medconnect-secret}
+      MINIO_CONSOLE_PORT_NUMBER: "9001"
+    ports: ["9000:9000", "9001:9001"]  # 9000 published so pre-signed URLs work from the host
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes: [minio-data:/bitnami/minio/data]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  minio-init:
+    image: bitnamilegacy/minio:2025.7.23
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-medconnect}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-medconnect-secret}
+    entrypoint: ["/bin/sh", "/init.sh"]
+    volumes: ["./infra/minio/init.sh:/init.sh:ro"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+
+  # --- Services ---
+  identity-service:
+    build: { context: ., args: { MODULE: identity-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://identity-db:5432/identity_db
+      SPRING_DATASOURCE_USERNAME: identity
+      SPRING_DATASOURCE_PASSWORD: ${IDENTITY_DB_PASSWORD:-identity}
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+    depends_on:
+      identity-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  consultation-service:
+    build: { context: ., args: { MODULE: consultation-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://consultation-db:5432/consultation_db
+      SPRING_DATASOURCE_USERNAME: consultation
+      SPRING_DATASOURCE_PASSWORD: ${CONSULTATION_DB_PASSWORD:-consultation}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      SPRING_DATA_REDIS_HOST: redis
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+      VIDEO_PROVIDER_URL: http://video-provider:8080
+      # shared secret for the internal snapshot used by care-queue's Redis rebuild
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+    depends_on:
+      consultation-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  triage-service:
+    build: { context: ., args: { MODULE: triage-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://triage-db:5432/triage_db
+      SPRING_DATASOURCE_USERNAME: triage
+      SPRING_DATASOURCE_PASSWORD: ${TRIAGE_DB_PASSWORD:-triage}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+    depends_on:
+      triage-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  care-queue-service:
+    build: { context: ., args: { MODULE: care-queue-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      SPRING_DATA_REDIS_HOST: redis
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+      CONSULTATION_SERVICE_URL: http://consultation-service:8080
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  # Mock external video provider: sessions + recording simulation (uploads to MinIO, signed webhook). No DB, internal network only.
+  video-provider:
+    build: { context: ., args: { MODULE: video-provider } }
+    restart: unless-stopped
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-medconnect}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-medconnect-secret}
+      WEBHOOK_URL: https://api-gateway:8443/api/v1/webhooks/video-provider
+      WEBHOOK_SSL_BUNDLE: gateway
+      SPRING_SSL_BUNDLE_PEM_GATEWAY_TRUSTSTORE_CERTIFICATE: file:/certs/gateway.crt
+      VIDEO_WEBHOOK_SECRET: ${VIDEO_WEBHOOK_SECRET:-dev-video-webhook-secret}
+      RECORDING_MODE: ${RECORDING_MODE:-completed}
+    volumes:
+      - gateway-certs:/certs:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+      gateway-cert:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  recording-service:
+    build: { context: ., args: { MODULE: recording-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://recording-db:5432/recording_db
+      SPRING_DATASOURCE_USERNAME: recording
+      SPRING_DATASOURCE_PASSWORD: ${RECORDING_DB_PASSWORD:-recording}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-medconnect}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-medconnect-secret}
+      VIDEO_WEBHOOK_SECRET: ${VIDEO_WEBHOOK_SECRET:-dev-video-webhook-secret}
+    depends_on:
+      recording-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  scheduling-service:
+    build: { context: ., args: { MODULE: scheduling-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://scheduling-db:5432/scheduling_db
+      SPRING_DATASOURCE_USERNAME: scheduling
+      SPRING_DATASOURCE_PASSWORD: ${SCHEDULING_DB_PASSWORD:-scheduling}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+    depends_on:
+      scheduling-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  prescription-service:
+    build: { context: ., args: { MODULE: prescription-service } }
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://prescription-db:5432/prescription_db
+      SPRING_DATASOURCE_USERNAME: prescription
+      SPRING_DATASOURCE_PASSWORD: ${PRESCRIPTION_DB_PASSWORD:-prescription}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+    depends_on:
+      prescription-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  audit-service:
+    build: { context: ., args: { MODULE: audit-service } }
+    restart: unless-stopped
+    environment:
+      # runtime user is the restricted audit_app (INSERT, SELECT); Flyway migrates as the owner "audit"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://audit-db:5432/audit_db
+      SPRING_DATASOURCE_USERNAME: audit_app
+      SPRING_DATASOURCE_PASSWORD: ${AUDIT_APP_PASSWORD:-audit_app}
+      FLYWAY_USER: audit
+      FLYWAY_PASSWORD: ${AUDIT_DB_PASSWORD:-audit}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+    depends_on:
+      audit-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  pharmacy-provider:
+    build: { context: ., args: { MODULE: pharmacy-provider } }
+    restart: unless-stopped
+    environment:
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: medconnect
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-medconnect}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  # One-shot: dev self-signed TLS cert (CN/SAN localhost + api-gateway) generated at start, never committed.
+  gateway-cert:
+    image: eclipse-temurin:21-jre
+    restart: "no"
+    environment:
+      GATEWAY_KEYSTORE_PASSWORD: ${GATEWAY_KEYSTORE_PASSWORD:-changeit}
+    volumes:
+      - gateway-certs:/certs
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        # keep an existing cert so consumers that already trust it (video-provider) stay valid across `up`
+        [ -f /certs/gateway.p12 ] && [ -f /certs/gateway.crt ] && exit 0
+        keytool -genkeypair -alias gateway -keyalg RSA -keysize 2048 -validity 365 -dname "CN=localhost"           -ext "SAN=dns:localhost,dns:api-gateway,ip:127.0.0.1" -storetype PKCS12           -keystore /certs/gateway.p12 -storepass "$$GATEWAY_KEYSTORE_PASSWORD"
+        keytool -exportcert -rfc -alias gateway -keystore /certs/gateway.p12 -storepass "$$GATEWAY_KEYSTORE_PASSWORD" -file /certs/gateway.crt
+        chmod 644 /certs/gateway.p12 /certs/gateway.crt
+
+  api-gateway:
+    build: { context: ., args: { MODULE: api-gateway } }
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - gateway-certs:/certs:ro
+    environment:
+      GATEWAY_SSL_ENABLED: "true"
+      GATEWAY_KEYSTORE_PASSWORD: ${GATEWAY_KEYSTORE_PASSWORD:-changeit}
+      SPRING_DATA_REDIS_HOST: redis
+      JWKS_URI: http://identity-service:8080/api/v1/.well-known/jwks.json
+    depends_on:
+      gateway-cert:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      identity-service:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  # --- Observability
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    restart: unless-stopped
+    ports: ["16686:16686"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  loki:
+    image: grafana/loki:3.5.0
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./infra/loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  alloy:
+    image: grafana/alloy:v1.10.0
+    restart: unless-stopped
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    user: root
+    volumes:
+      - ./infra/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # Dev credentials: admin / admin
+  grafana:
+    image: grafana/grafana:12.1.0
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus, loki, jaeger]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+volumes:
+  gateway-certs:
+  identity-db-data:
+  consultation-db-data:
+  triage-db-data:
+  scheduling-db-data:
+  prescription-db-data:
+  audit-db-data:
+  recording-db-data:
+  redis-data:
+  rabbitmq-data:
+  minio-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

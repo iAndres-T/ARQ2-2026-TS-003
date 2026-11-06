@@ -1,0 +1,41 @@
+groups:
+  - name: medconnect
+    rules:
+      - alert: DeadLetterQueueNotEmpty
+        expr: rabbitmq_detailed_queue_messages{queue=~".*[.]dlq"} > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "DLQ {{ $labels.queue }} holds {{ $value }} message(s)"
+      - alert: LowPriorityWaitTooLong
+        # follows aging-threshold (MEDCONNECT_QUEUE_AGING_THRESHOLD) (90 min = 5400 s) + 10 min margin = 6000 s
+        expr: medconnect_queue_oldest_wait_seconds{level="LOW"} > 6000
+        labels: { severity: warning }
+        annotations:
+          summary: "Oldest LOW consultation has waited {{ $value }} s (aging should have promoted it at 5400 s)"
+      - alert: OutboxBacklogHigh
+        expr: medconnect_outbox_pending > 100
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} has {{ $value }} unpublished outbox events"
+      - alert: OutboxUnroutableEvents
+        expr: medconnect_outbox_unroutable > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} has {{ $value }} outbox event(s) the broker cannot route"
+      - alert: RedisMemoryHigh
+        # compose sets maxmemory 300mb with noeviction; at 100 % writes (claims, enqueue) fail
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Redis uses {{ $value | humanizePercentage }} of maxmemory"
+      - alert: MediumQueueDepthHigh
+        # ADR-004 mitigation: a MEDIUM backlog means doctors are saturated and LOW aging will soon feed it
+        expr: medconnect_queue_depth{level="MEDIUM"} > 50
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} consultations are waiting at MEDIUM priority"

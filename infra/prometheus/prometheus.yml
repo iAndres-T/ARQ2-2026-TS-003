@@ -1,0 +1,66 @@
+# Scrapes every service on the compose network (internal port 8080) and RabbitMQ's prometheus plugin.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: api-gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["api-gateway:8080"]
+  - job_name: identity-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["identity-service:8080"]
+  - job_name: consultation-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["consultation-service:8080"]
+  - job_name: triage-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["triage-service:8080"]
+  - job_name: care-queue-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["care-queue-service:8080"]
+  - job_name: scheduling-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["scheduling-service:8080"]
+  - job_name: prescription-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["prescription-service:8080"]
+  - job_name: recording-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["recording-service:8080"]
+  - job_name: audit-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["audit-service:8080"]
+  - job_name: pharmacy-provider
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["pharmacy-provider:8080"]
+  - job_name: video-provider
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["video-provider:8080"]
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+  # per-queue depth (needed for the *.dlq alert and the DLQ panel)
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

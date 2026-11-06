@@ -1,0 +1,11 @@
+/mvnw text eol=lf
+*.cmd text eol=crlf
+*.sh text eol=lf
+infra/rabbitmq/enabled_plugins text eol=lf
+*.sql text eol=lf
+infra/**/*.yml text eol=lf
+infra/**/*.yaml text eol=lf
+infra/**/*.json text eol=lf
+infra/**/*.sh text eol=lf
+infra/**/*.conf text eol=lf
+infra/**/*.alloy text eol=lf

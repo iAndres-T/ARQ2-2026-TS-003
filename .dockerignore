@@ -1,0 +1,9 @@
+.git
+.superpowers
+.idea
+.vscode
+docs
+infra
+**/target
+**/.mvn/wrapper/maven-wrapper.jar
+.env

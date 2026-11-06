@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: test-service
+  flyway:
+    locations: classpath:db/common,classpath:db/testservice
+medconnect:
+  messaging:
+    retry-delays: 100ms,150ms,200ms,250ms,300ms
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    metrics:
+      export:
+        enabled: false
+spring.rabbitmq:
+  template.observation-enabled: true
+  listener.simple.observation-enabled: true

@@ -1,0 +1,3 @@
+com.medconnect.common.messaging.MessagingAutoConfiguration
+com.medconnect.common.messaging.OutboxAutoConfiguration
+com.medconnect.common.web.WebAutoConfiguration
