@@ -1,0 +1,3548 @@
+{
+  "info": {
+    "name": "MedConnect – manual test",
+    "description": "Manual end-to-end walkthrough of MedConnect through the API Gateway. Run the folders in order on a fresh stack; see docs/manual-testing-guide.md. Disable SSL certificate verification (self-signed dev certificate).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://localhost:8443"
+    },
+    {
+      "key": "patientPassword",
+      "value": "S3cure!Passw0rd"
+    },
+    {
+      "key": "doctorPassword",
+      "value": "Doctor!Passw0rd1"
+    },
+    {
+      "key": "doctor1Id",
+      "value": "d0c70000-0000-4000-8000-000000000001"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 Health",
+      "description": "Gateway reachable over HTTPS.",
+      "item": [
+        {
+          "name": "JWKS (public) -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/.well-known/jwks.json",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"has a key\", () => pm.expect(pm.response.json().keys.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 Identity (S-F1-01, S-F1-02, refresh, D10)",
+      "description": "Registration, login, refresh rotation, staff logins.",
+      "item": [
+        {
+          "name": "Register patient A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{patientPassword}}\",\n  \"fullName\": \"Patient A\",\n  \"birthDate\": \"1968-04-12\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"emailA\", \"patient-a-\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login patient A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is PATIENT\", () => pm.expect(pm.response.json().role).to.eql(\"PATIENT\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenA\", pm.response.json().accessToken);",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"refreshA\", pm.response.json().refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register patient A again -> 409 email taken",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{patientPassword}}\",\n  \"fullName\": \"Patient A\",\n  \"birthDate\": \"1968-04-12\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register weak password -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"weak-{{$timestamp}}@example.com\",\n  \"password\": \"123\",\n  \"fullName\": \"Weak Password\",\n  \"birthDate\": \"1990-01-01\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login wrong password -> 401 (S-F1-02)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"Wrong!Passw0rd\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"no token\", () => pm.expect(pm.response.json().accessToken).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh patient A -> 200 new pair",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/refresh",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshA}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"oldRefreshA\", pm.collectionVariables.get(\"refreshA\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenA\", pm.response.json().accessToken);",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"refreshA\", pm.response.json().refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh again with the used token -> 401 (single use)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/refresh",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{oldRefreshA}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register patient B",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailB}}\",\n  \"password\": \"{{patientPassword}}\",\n  \"fullName\": \"Patient B\",\n  \"birthDate\": \"1968-04-12\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"emailB\", \"patient-b-\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login patient B",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailB}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is PATIENT\", () => pm.expect(pm.response.json().role).to.eql(\"PATIENT\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenB\", pm.response.json().accessToken);",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"refreshB\", pm.response.json().refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register patient C",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailC}}\",\n  \"password\": \"{{patientPassword}}\",\n  \"fullName\": \"Patient C\",\n  \"birthDate\": \"1968-04-12\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"emailC\", \"patient-c-\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login patient C",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailC}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is PATIENT\", () => pm.expect(pm.response.json().role).to.eql(\"PATIENT\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenC\", pm.response.json().accessToken);",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"refreshC\", pm.response.json().refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register patient D",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailD}}\",\n  \"password\": \"{{patientPassword}}\",\n  \"fullName\": \"Patient D\",\n  \"birthDate\": \"1968-04-12\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"emailD\", \"patient-d-\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login patient D",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailD}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is PATIENT\", () => pm.expect(pm.response.json().role).to.eql(\"PATIENT\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenD\", pm.response.json().accessToken);",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"refreshD\", pm.response.json().refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login doctor1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"doctor1@medconnect.test\",\n  \"password\": \"{{doctorPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is MEDICAL_STAFF\", () => pm.expect(pm.response.json().role).to.eql(\"MEDICAL_STAFF\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenDoc1\", pm.response.json().accessToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login doctor2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"doctor2@medconnect.test\",\n  \"password\": \"{{doctorPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is MEDICAL_STAFF\", () => pm.expect(pm.response.json().role).to.eql(\"MEDICAL_STAFF\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenDoc2\", pm.response.json().accessToken);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Access control (S-F1-03..06, R-F1-03)",
+      "description": "Gateway and service RBAC.",
+      "item": [
+        {
+          "name": "POST consultation without token -> 401 (S-F1-03)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"COUGH\",\n  \"painLevel\": 2,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 POST consultation -> 403 (S-F1-05)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"COUGH\",\n  \"painLevel\": 2,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A claim -> 403 (S-F1-04)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A override -> 403 (S-F1-04)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{$guid}}/override",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newPriority\": \"HIGH\",\n  \"reason\": \"patient tries to jump the queue\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A queue stats -> 403 (R-F1-03)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/stats",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A audit -> 403 (R-F1-03)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/audit/events?limit=5",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Shifts and availability (scheduling)",
+      "description": "doctor1 gets a shift and goes FREE; doctor2 has no shift and no scope.",
+      "item": [
+        {
+          "name": "doctor2 FREE without shift -> 409",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc2}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/me/availability",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FREE\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor2 create shift (no scheduling:manage) -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc2}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/shifts",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctorId\": \"d0c70000-0000-4000-8000-000000000002\",\n  \"startsAt\": \"{{shiftStart}}\",\n  \"endsAt\": \"{{shiftEnd}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "const iso = d => d.toISOString().replace(/\\.\\d{3}Z$/, \"Z\");",
+                  "pm.collectionVariables.set(\"shiftStart\", iso(now));",
+                  "pm.collectionVariables.set(\"shiftEnd\", iso(new Date(now.getTime() + 8 * 3600 * 1000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 shift endsAt before startsAt -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/shifts",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctorId\": \"{{doctor1Id}}\",\n  \"startsAt\": \"{{shiftEnd}}\",\n  \"endsAt\": \"{{shiftStart}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 create shift now..+8h -> 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/shifts",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctorId\": \"{{doctor1Id}}\",\n  \"startsAt\": \"{{shiftStart}}\",\n  \"endsAt\": \"{{shiftEnd}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "const iso = d => d.toISOString().replace(/\\.\\d{3}Z$/, \"Z\");",
+                  "pm.collectionVariables.set(\"shiftStart\", iso(now));",
+                  "pm.collectionVariables.set(\"shiftEnd\", iso(new Date(now.getTime() + 8 * 3600 * 1000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 same shift again -> 409 overlap",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/shifts",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctorId\": \"{{doctor1Id}}\",\n  \"startsAt\": \"{{shiftStart}}\",\n  \"endsAt\": \"{{shiftEnd}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 list shifts -> 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/shifts?from={{shiftStart}}&to={{shiftEnd}}&doctorId={{doctor1Id}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"one shift\", () => pm.expect(pm.response.json().items.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 availability FREE -> 200",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/me/availability",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FREE\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status FREE\", () => pm.expect(pm.response.json().status).to.eql(\"FREE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET doctors availability -> doctor1 FREE (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/availability",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().items.find(i => i.doctorId === \"d0c70000-0000-4000-8000-000000000001\");",
+                  "pm.test(\"doctor1 is FREE\", () => pm.expect(d && d.status).to.eql(\"FREE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET queue stats -> HIGH 0 / MEDIUM 0 / LOW 0 (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/stats",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Counts assume a fresh stack and that this collection is the only client."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().queues;",
+                  "pm.test(\"HIGH 0, MEDIUM 0, LOW 0\", () => pm.expect([q.HIGH.waiting, q.MEDIUM.waiting, q.LOW.waiting]).to.eql([0, 0, 0]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Intake and triage rule set v1 (F3)",
+      "description": "Four patients, one per rule. Wait ~1-2 s after each POST before checking status (triage is asynchronous).",
+      "item": [
+        {
+          "name": "A POST without Idempotency-Key -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"CHEST_PAIN\",\n  \"painLevel\": 9,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A POST painLevel 15 -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"CHEST_PAIN\",\n  \"painLevel\": 15,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A POST CHEST_PAIN -> 202 REQUESTED (S-F3-01)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{keyA}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"CHEST_PAIN\",\n  \"painLevel\": 9,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"keyA\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"status REQUESTED\", () => pm.expect(pm.response.json().status).to.eql(\"REQUESTED\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"cidA\", pm.response.json().consultationId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A replay same Idempotency-Key -> 202 same consultation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{keyA}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"CHEST_PAIN\",\n  \"painLevel\": 9,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"same consultationId\", () => pm.expect(pm.response.json().consultationId).to.eql(pm.collectionVariables.get(\"cidA\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A POST again with a new key -> 409 active consultation (S-F3-05)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"CHEST_PAIN\",\n  \"painLevel\": 9,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A GET consultation -> WAITING / HIGH (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status WAITING\", () => pm.expect(pm.response.json().status).to.eql(\"WAITING\"));",
+                  "pm.test(\"priority HIGH\", () => pm.expect(pm.response.json().currentPriority).to.eql(\"HIGH\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A GET own triage -> 200 without ruleId",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidA}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ruleId hidden from patient\", () => pm.expect(pm.response.json().ruleId).to.be.oneOf([undefined, null]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET triage A -> HIGH R2_CRITICAL_SYMPTOM (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidA}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"priority HIGH\", () => pm.expect(pm.response.json().priority).to.eql(\"HIGH\"));",
+                  "pm.test(\"ruleId R2_CRITICAL_SYMPTOM\", () => pm.expect(pm.response.json().ruleId).to.eql(\"R2_CRITICAL_SYMPTOM\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B POST COUGH pain 2 -> 202 (S-F3-04)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenB}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{keyB}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"COUGH\",\n  \"painLevel\": 2,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"keyB\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"cidB\", pm.response.json().consultationId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "C POST FEVER pain 8 -> 202 (S-F3-03)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenC}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{keyC}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"FEVER\",\n  \"painLevel\": 8,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": false,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"keyC\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"cidC\", pm.response.json().consultationId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "D POST COUGH + difficultyBreathing -> 202 (S-F3-02)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenD}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{keyD}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"COUGH\",\n  \"painLevel\": 3,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": true,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"keyD\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"cidD\", pm.response.json().consultationId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET triage B -> LOW R4_DEFAULT (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidB}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"priority LOW\", () => pm.expect(pm.response.json().priority).to.eql(\"LOW\"));",
+                  "pm.test(\"ruleId R4_DEFAULT\", () => pm.expect(pm.response.json().ruleId).to.eql(\"R4_DEFAULT\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET triage C -> MEDIUM R3_FEVER_HIGH_PAIN (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidC}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"priority MEDIUM\", () => pm.expect(pm.response.json().priority).to.eql(\"MEDIUM\"));",
+                  "pm.test(\"ruleId R3_FEVER_HIGH_PAIN\", () => pm.expect(pm.response.json().ruleId).to.eql(\"R3_FEVER_HIGH_PAIN\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET triage D -> HIGH R1_RED_FLAG (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidD}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"priority HIGH\", () => pm.expect(pm.response.json().priority).to.eql(\"HIGH\"));",
+                  "pm.test(\"ruleId R1_RED_FLAG\", () => pm.expect(pm.response.json().ruleId).to.eql(\"R1_RED_FLAG\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B GET consultation of A -> 403 (S-F1-06)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenB}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET queue stats -> HIGH 2 / MEDIUM 1 / LOW 1 (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/stats",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Counts assume a fresh stack and that this collection is the only client."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().queues;",
+                  "pm.test(\"HIGH 2, MEDIUM 1, LOW 1\", () => pm.expect([q.HIGH.waiting, q.MEDIUM.waiting, q.LOW.waiting]).to.eql([2, 1, 1]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Re-triage, override, cancel (S-F3-07/08, S-F4-10)",
+      "description": "B moves LOW -> HIGH by symptoms, back to LOW by override, then cancels.",
+      "item": [
+        {
+          "name": "B update symptoms (difficultyBreathing) -> 202 (S-F3-08)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenB}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidB}}/symptoms",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mainSymptom\": \"SHORTNESS_OF_BREATH\",\n  \"painLevel\": 6,\n  \"symptomDuration\": {\n    \"value\": 30,\n    \"unit\": \"MINUTES\"\n  },\n  \"age\": 58,\n  \"redFlags\": {\n    \"difficultyBreathing\": true,\n    \"lossOfConsciousness\": false\n  },\n  \"description\": \"Now it is hard to breathe\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET triage B -> HIGH, triageVersion 2 (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidB}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"priority HIGH\", () => pm.expect(pm.response.json().priority).to.eql(\"HIGH\"));",
+                  "pm.test(\"triageVersion 2\", () => pm.expect(pm.response.json().triageVersion).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET queue stats -> HIGH 3 / MEDIUM 1 / LOW 0 (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/stats",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Counts assume a fresh stack and that this collection is the only client."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().queues;",
+                  "pm.test(\"HIGH 3, MEDIUM 1, LOW 0\", () => pm.expect([q.HIGH.waiting, q.MEDIUM.waiting, q.LOW.waiting]).to.eql([3, 1, 0]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 override B reason too short -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidB}}/override",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newPriority\": \"LOW\",\n  \"reason\": \"abc\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 override B to same priority -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidB}}/override",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newPriority\": \"HIGH\",\n  \"reason\": \"Same priority on purpose\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 override B -> LOW 200 (S-F3-07)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidB}}/override",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newPriority\": \"LOW\",\n  \"reason\": \"Call-back: breathing normal, mild cough only\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET queue stats -> HIGH 2 / MEDIUM 1 / LOW 1 (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/stats",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Counts assume a fresh stack and that this collection is the only client."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().queues;",
+                  "pm.test(\"HIGH 2, MEDIUM 1, LOW 1\", () => pm.expect([q.HIGH.waiting, q.MEDIUM.waiting, q.LOW.waiting]).to.eql([2, 1, 1]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B cancel while WAITING -> 200 CANCELLED (S-F4-10)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenB}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidB}}/cancel",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Feeling better\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status CANCELLED\", () => pm.expect(pm.response.json().status).to.eql(\"CANCELLED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B cancel again -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenB}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidB}}/cancel",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Again\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET queue stats -> HIGH 2 / MEDIUM 1 / LOW 0 (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/stats",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Counts assume a fresh stack and that this collection is the only client."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().queues;",
+                  "pm.test(\"HIGH 2, MEDIUM 1, LOW 0\", () => pm.expect([q.HIGH.waiting, q.MEDIUM.waiting, q.LOW.waiting]).to.eql([2, 1, 0]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 Claim, video, prescription, complete (F4, F5)",
+      "description": "doctor1 claims the oldest HIGH patient (A) and runs the whole consultation.",
+      "item": [
+        {
+          "name": "doctor1 claim -> 201 patient A (S-F4-01)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{claimKey1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"claimKey1\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"claimed A\", () => pm.expect(pm.response.json().consultationId).to.eql(pm.collectionVariables.get(\"cidA\")));",
+                  "pm.test(\"doctor1\", () => pm.expect(pm.response.json().doctorId).to.eql(\"d0c70000-0000-4000-8000-000000000001\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 replay same claim key -> 201 same assignment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{claimKey1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"same consultation\", () => pm.expect(pm.response.json().consultationId).to.eql(pm.collectionVariables.get(\"cidA\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 claim with new key while BUSY -> 409 (S-F4-06)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{claimKey2}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"claimKey2\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET doctors availability -> doctor1 BUSY (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/availability",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().items.find(i => i.doctorId === \"d0c70000-0000-4000-8000-000000000001\");",
+                  "pm.test(\"doctor1 is BUSY\", () => pm.expect(d && d.status).to.eql(\"BUSY\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A GET consultation -> ASSIGNED (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status ASSIGNED\", () => pm.expect(pm.response.json().status).to.eql(\"ASSIGNED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 start before patient joins -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/start",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 prescription while ASSIGNED -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultationId\": \"{{cidA}}\",\n  \"items\": [\n    { \"medicationName\": \"Aspirin\", \"dosage\": \"100 mg\", \"frequency\": \"once daily\", \"durationDays\": 30, \"instructions\": \"Take after breakfast\" }\n  ],\n  \"notes\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A join -> 200 joinUrl",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/join",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"joinUrl\", () => pm.expect(pm.response.json().joinUrl).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 start -> 200 IN_PROGRESS",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/start",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status IN_PROGRESS\", () => pm.expect(pm.response.json().status).to.eql(\"IN_PROGRESS\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 override A while IN_PROGRESS -> 409 (S-F3-09)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/triage/consultations/{{cidA}}/override",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newPriority\": \"LOW\",\n  \"reason\": \"Should be rejected\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A cancel while IN_PROGRESS -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/cancel",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Too late\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A issues prescription -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultationId\": \"{{cidA}}\",\n  \"items\": [\n    { \"medicationName\": \"Aspirin\", \"dosage\": \"100 mg\", \"frequency\": \"once daily\", \"durationDays\": 30, \"instructions\": \"Take after breakfast\" }\n  ],\n  \"notes\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor2 (not assigned) issues prescription -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc2}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultationId\": \"{{cidA}}\",\n  \"items\": [\n    { \"medicationName\": \"Aspirin\", \"dosage\": \"100 mg\", \"frequency\": \"once daily\", \"durationDays\": 30, \"instructions\": \"Take after breakfast\" }\n  ],\n  \"notes\": \"manual test\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 prescription empty items -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{tmpKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultationId\": \"{{cidA}}\",\n  \"items\": []\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"tmpKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 issue prescription -> 202",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{keyRx}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultationId\": \"{{cidA}}\",\n  \"items\": [\n    { \"medicationName\": \"Aspirin\", \"dosage\": \"100 mg\", \"frequency\": \"once daily\", \"durationDays\": 30, \"instructions\": \"Take after breakfast\" }\n  ],\n  \"notes\": \"manual test\"\n}"
+            },
+            "description": "A 409 right after start means prescription-service has not consumed ConsultationStarted yet: resend."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"keyRx\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"prescriptionId\", pm.response.json().prescriptionId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET prescription -> PUBLISHED (resend until)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions/{{prescriptionId}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"deliveryStatus PUBLISHED\", () => pm.expect(pm.response.json().deliveryStatus).to.eql(\"PUBLISHED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A GET own prescription -> 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/prescriptions/{{prescriptionId}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 complete consultation -> 200 COMPLETED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/complete",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clinicalSummary\": \"Suspected angina. Referred to cardiology.\",\n  \"diagnosisCodes\": [\n    \"I20.9\"\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status COMPLETED\", () => pm.expect(pm.response.json().status).to.eql(\"COMPLETED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET doctors availability -> doctor1 FREE (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/availability",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().items.find(i => i.doctorId === \"d0c70000-0000-4000-8000-000000000001\");",
+                  "pm.test(\"doctor1 is FREE\", () => pm.expect(d && d.status).to.eql(\"FREE\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 Recording (F2)",
+      "description": "Recording becomes AVAILABLE up to ~60 s after completion.",
+      "item": [
+        {
+          "name": "doctor1 GET recording A -> AVAILABLE (resend until)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/recording",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status AVAILABLE\", () => pm.expect(pm.response.json().status).to.eql(\"AVAILABLE\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"downloadUrl\", pm.response.json().downloadUrl);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Download pre-signed URL (valid 300 s) -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{downloadUrl}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor2 (no recordings:read) -> 403 (S-F2-03)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc2}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/recording",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient A -> 403 (S-F2-03)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidA}}/recording",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 Audit trail",
+      "description": "Every event is stored append-only; doctor1 has audit:read.",
+      "item": [
+        {
+          "name": "doctor1 audit for A -> full lifecycle",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/audit/events?aggregateId={{cidA}}&limit=100",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const types = pm.response.json().items.map(e => e.eventType);",
+                  "[\"ConsultationRequested\",\"PatientTriaged\",\"PatientEnqueued\",\"PatientAssigned\",\"ConsultationStarted\",\"ConsultationCompleted\"].forEach(t => pm.test(\"has \" + t, () => pm.expect(types).to.include(t)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 audit for B -> override with actor (S-F3-07)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/audit/events?aggregateId={{cidB}}&eventType=PriorityOverridden",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json().items[0];",
+                  "pm.test(\"override recorded\", () => pm.expect(e).to.be.an(\"object\"));",
+                  "pm.test(\"actor is doctor1 user\", () => pm.expect(e.actorId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor2 (no audit:read) -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc2}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/audit/events?limit=5",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09 No-show (S-F4-09) – waits 5 min",
+      "description": "doctor1 claims D; D never joins. After ~5 min 15 s the consultation is NO_SHOW and doctor1 is FREE again.",
+      "item": [
+        {
+          "name": "doctor1 claim -> 201 patient D (HIGH)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{claimKey3}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"claimKey3\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"claimed D\", () => pm.expect(pm.response.json().consultationId).to.eql(pm.collectionVariables.get(\"cidD\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient D GET consultation -> ASSIGNED (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenD}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidD}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status ASSIGNED\", () => pm.expect(pm.response.json().status).to.eql(\"ASSIGNED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient D GET consultation -> NO_SHOW (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenD}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidD}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status NO_SHOW\", () => pm.expect(pm.response.json().status).to.eql(\"NO_SHOW\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "D join after no-show -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenD}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidD}}/join",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET doctors availability -> doctor1 FREE (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/availability",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().items.find(i => i.doctorId === \"d0c70000-0000-4000-8000-000000000001\");",
+                  "pm.test(\"doctor1 is FREE\", () => pm.expect(d && d.status).to.eql(\"FREE\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10 MEDIUM patient, then empty queues (S-F4-02, S-F4-05)",
+      "description": "HIGH is empty now, so doctor1 gets C (MEDIUM).",
+      "item": [
+        {
+          "name": "doctor1 claim -> 201 patient C (MEDIUM)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{claimKey4}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"claimKey4\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"claimed C\", () => pm.expect(pm.response.json().consultationId).to.eql(pm.collectionVariables.get(\"cidC\")));",
+                  "pm.test(\"priority MEDIUM\", () => pm.expect(pm.response.json().priority).to.eql(\"MEDIUM\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient C GET consultation -> ASSIGNED (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenC}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidC}}",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status ASSIGNED\", () => pm.expect(pm.response.json().status).to.eql(\"ASSIGNED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "C join -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenC}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidC}}/join",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 start C -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidC}}/start",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 complete consultation -> 200 COMPLETED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/consultations/{{cidC}}/complete",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clinicalSummary\": \"Viral fever. Rest and fluids.\",\n  \"diagnosisCodes\": [\n    \"R50.9\"\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status COMPLETED\", () => pm.expect(pm.response.json().status).to.eql(\"COMPLETED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 GET doctors availability -> doctor1 FREE (resend until it matches)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/doctors/availability",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().items.find(i => i.doctorId === \"d0c70000-0000-4000-8000-000000000001\");",
+                  "pm.test(\"doctor1 is FREE\", () => pm.expect(d && d.status).to.eql(\"FREE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "doctor1 claim with empty queues -> 204 (S-F4-05) (resend until it matches)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenDoc1}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{claimKey5}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queue/claims",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"claimKey5\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11 Account lockout (D10)",
+      "description": "Send \"wrong password\" 4 times (401); the 5th failure locks the account (423), and even the correct password returns 423 for 15 min.",
+      "item": [
+        {
+          "name": "Register patient E",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailE}}\",\n  \"password\": \"{{patientPassword}}\",\n  \"fullName\": \"Patient E\",\n  \"birthDate\": \"1968-04-12\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"emailE\", \"patient-e-\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login patient E",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailE}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"role is PATIENT\", () => pm.expect(pm.response.json().role).to.eql(\"PATIENT\"));",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"tokenE\", pm.response.json().accessToken);",
+                  "if (pm.response.code < 300) pm.collectionVariables.set(\"refreshE\", pm.response.json().refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E wrong password (send 4 times) -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailE}}\",\n  \"password\": \"Wrong!Passw0rd\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E 5th wrong password -> 423 locked",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailE}}\",\n  \"password\": \"Wrong!Passw0rd\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 423\", () => pm.response.to.have.status(423));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E correct password while locked -> 423",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailE}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 423\", () => pm.response.to.have.status(423));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
