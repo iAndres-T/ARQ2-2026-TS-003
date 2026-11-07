@@ -1,0 +1,101 @@
+spring:
+  application:
+    name: consultation-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/consultation_db}
+    username: ${SPRING_DATASOURCE_USERNAME:consultation}
+    password: ${SPRING_DATASOURCE_PASSWORD:consultation}
+    hikari:
+      # pool must exceed listener max-concurrency (4) + HTTP threads in use, or consumers starve requests
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT:3000} # ms (Hikari takes a long, not a Duration); fail fast so a DB outage is a 503, not a hung request
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    locations: classpath:db/migration,classpath:db/common
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      # short, so a Redis outage degrades to DB reads instead of stalling requests (D11)
+      timeout: ${REDIS_TIMEOUT:500ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:1s}
+  cache:
+    type: redis
+    redis:
+      time-to-live: ${CONSULTATION_CACHE_TTL:30s}
+      key-prefix: "consultation:"
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    username: ${SPRING_RABBITMQ_USERNAME:medconnect}
+    password: ${SPRING_RABBITMQ_PASSWORD:medconnect}
+    template:
+      observation-enabled: true
+    listener:
+      simple:
+        observation-enabled: true
+        # per-aggregate ordering is not needed across messages: handlers compare aggregateVersion
+        concurrency: ${LISTENER_CONCURRENCY:2}
+        max-concurrency: ${LISTENER_MAX_CONCURRENCY:4}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://identity-service:8080/api/v1/.well-known/jwks.json}
+
+management:
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_ENDPOINT:http://jaeger:4318}/v1/traces
+  tracing:
+    sampling:
+      probability: 1.0
+  observations:
+    enable:
+      spring.security: false  # filter-chain spans are noise in Jaeger
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  # traces only: metrics are scraped by Prometheus, logs are collected by Alloy
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+    json:
+      rename:
+        # Loki/Grafana correlation (D12): {container="x"} | json | trace_id="..."
+        traceId: trace_id
+        spanId: span_id
+
+medconnect:
+  # shared secret for GET /internal/v1/consultations/waiting (care-queue rebuild); override in every real deployment
+  internal-token: ${INTERNAL_TOKEN:dev-internal-token}
+  video:
+    url: ${VIDEO_PROVIDER_URL:http://video-provider:8080}
+    timeout: 3s
+    retries: 2
+  consultation:
+    no-show-timeout: ${MEDCONNECT_NO_SHOW_TIMEOUT:300s}
+    no-show-interval: PT15S
