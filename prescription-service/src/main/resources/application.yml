@@ -1,0 +1,69 @@
+spring:
+  application:
+    name: prescription-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/prescription_db}
+    username: ${SPRING_DATASOURCE_USERNAME:prescription}
+    password: ${SPRING_DATASOURCE_PASSWORD:prescription}
+    hikari:
+      connection-timeout: ${DB_CONNECTION_TIMEOUT:3000} # ms (Hikari takes a long, not a Duration); fail fast so a DB outage is a 503, not a hung request
+  flyway:
+    locations: classpath:db/migration,classpath:db/common
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    username: ${SPRING_RABBITMQ_USERNAME:medconnect}
+    password: ${SPRING_RABBITMQ_PASSWORD:medconnect}
+    template:
+      observation-enabled: true
+    listener:
+      simple:
+        observation-enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://identity-service:8080/api/v1/.well-known/jwks.json}
+
+management:
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_ENDPOINT:http://jaeger:4318}/v1/traces
+  tracing:
+    sampling:
+      probability: 1.0
+  observations:
+    enable:
+      spring.security: false  # filter-chain spans are noise in Jaeger
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  # traces only: metrics are scraped by Prometheus, logs are collected by Alloy
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+    json:
+      rename:
+        # Loki/Grafana correlation (D12): {container="x"} | json | trace_id="..."
+        traceId: trace_id
+        spanId: span_id
