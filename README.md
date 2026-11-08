@@ -112,14 +112,6 @@ Integration tests start their own PostgreSQL / Redis / RabbitMQ containers and n
 - **Metrics:** Prometheus scrapes every service's `/actuator/prometheus`, RabbitMQ and Redis (`redis-exporter`), internal only, used through Grafana. Dashboard *MedConnect overview* in Grafana.
 - **Alerts** (`infra/prometheus/alerts.yml`): `DeadLetterQueueNotEmpty`, `LowPriorityWaitTooLong`, `OutboxBacklogHigh`, `OutboxUnroutableEvents`, `RedisMemoryHigh`, `MediumQueueDepthHigh`.
 
-## Architecture decisions
-
-- ADR-001..005 in [`docs/adrs/`](docs/adrs/) (Wave 1, unchanged): priority queues, outbox, recordings, FIFO/aging, RBAC.
-- [ADR-006](docs/adrs/006-database-per-service-postgresql.md) PostgreSQL per service, Redis for the queues.
-- [ADR-007](docs/adrs/007-care-queue-redis-outbox.md) Redis outbox inside the care-queue Lua scripts.
-- [`docs/spec-implementation-notes.md`](docs/spec-implementation-notes.md): every extension or deviation from `docs/spec.md`, section by section.
-- Short-form plan decisions D1–D17 in [`AGENTS.md`](AGENTS.md#plan-decisions-deviationsadditions-to-the-spec--keep-in-sync-with-the-plan).
-
 ## DLQ replay runbook
 
 After the last retry (1 delivery + 5 retries, about 73 min in total) a failing message lands in `<queue>.dlq` and `DeadLetterQueueNotEmpty` fires. Nothing replays it automatically. Once the cause is fixed (dependency back up, bug deployed):
@@ -142,15 +134,3 @@ After the last retry (1 delivery + 5 retries, about 73 min in total) a failing m
 **Why replay is safe:** every consumer deduplicates by `eventId` (inbox table, Redis inbox keys or audit primary key) and discards stale state with `aggregateVersion` / `triageVersion` checks, so a replayed event that was already applied, or that is older than the current state, is a no-op. Exception: care-queue keeps cancellation tombstones for 24 h, so replaying a `PatientTriaged` more than 24 h after its consultation was cancelled could re-enqueue it; check the consultation status first.
 
 **`pharmacy.prescriptions.dlq`:** messages arrive through the fanout `medconnect.pharmacy.dlx`, which also notifies prescription-service (`prescription.delivery-failed`) and sets `deliveryStatus = DEAD_LETTERED`. Replay to `pharmacy.prescriptions` once the pharmacy is reachable (mock: `pharmacy-provider` outage toggle off). The prescription keeps `DEAD_LETTERED` after a successful replay (no acknowledgement event exists). The mock pharmacy deduplicates `eventId` in memory only, so a replay after a pharmacy restart can deliver a prescription twice.
-
-## Known limitations
-
-- **Shared RabbitMQ user:** every service uses one administrator user (`medconnect`) with full permissions; ADR-005's per-service credentials and scoped permissions are not implemented (accepted gap for the local environment).
-- **No TLS inside the compose network**; the gateway uses a self-signed development certificate.
-- **Redis has no replica or failover** (ADR-001 mitigation not built): AOF `everysec` and `noeviction` only. The care-queue outbox, leases and doctor projection are not rebuildable from `consultation_db` (ADR-007).
-- **Single-node Lua:** the queue scripts build keys internally and assume one Redis node (no Redis Cluster).
-- **Recording reconciliation is partial:** a timeout job marks recordings with no webhook after 30 min as `FAILED` (a late webhook still completes them); backfilling metadata by listing object storage (ADR-003 / spec §3) is not implemented.
-- **MinIO** runs the last Bitnami legacy image (`bitnamilegacy/minio`); the bucket is private and versioned but has **no server-side encryption**.
-- **Jaeger** uses in-memory storage: traces are lost when the container restarts.
-- **Development secrets everywhere:** `.env.example`, the internal token, the webhook secret, keystore password `changeit`, Grafana `admin/admin` with anonymous Viewer.
-- After `docker compose down` without `-v`, old volumes keep earlier schemas and keys; use `docker compose down -v` for a clean start.
