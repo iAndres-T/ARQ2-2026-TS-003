@@ -1,0 +1,79 @@
+spring:
+  application:
+    name: care-queue-service
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    username: ${SPRING_RABBITMQ_USERNAME:medconnect}
+    password: ${SPRING_RABBITMQ_PASSWORD:medconnect}
+    template:
+      observation-enabled: true
+    listener:
+      simple:
+        observation-enabled: true
+        # per-aggregate ordering is not needed across messages: handlers compare aggregateVersion
+        concurrency: ${LISTENER_CONCURRENCY:2}
+        max-concurrency: ${LISTENER_MAX_CONCURRENCY:8}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://identity-service:8080/api/v1/.well-known/jwks.json}
+
+management:
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_ENDPOINT:http://jaeger:4318}/v1/traces
+  tracing:
+    sampling:
+      probability: 1.0
+  observations:
+    enable:
+      spring.security: false  # filter-chain spans are noise in Jaeger
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  # traces only: metrics are scraped by Prometheus, logs are collected by Alloy
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+    json:
+      rename:
+        # Loki/Grafana correlation (D12): {container="x"} | json | trace_id="..."
+        traceId: trace_id
+        spanId: span_id
+
+medconnect:
+  # Redis rebuild source (spec §4): consultation-service internal snapshot, guarded by X-Internal-Token
+  consultation-service:
+    url: ${CONSULTATION_SERVICE_URL:http://consultation-service:8080}
+  internal-token: ${INTERNAL_TOKEN:dev-internal-token}
+  queue:
+    lease: ${MEDCONNECT_QUEUE_LEASE:30s}
+    lease-recovery-interval: PT5S
+    aging-threshold: ${MEDCONNECT_QUEUE_AGING_THRESHOLD:90m}
+    aging-interval: PT60S
