@@ -1,0 +1,96 @@
+spring:
+  application:
+    name: recording-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/recording_db}
+    username: ${SPRING_DATASOURCE_USERNAME:recording}
+    password: ${SPRING_DATASOURCE_PASSWORD:recording}
+    hikari:
+      connection-timeout: ${DB_CONNECTION_TIMEOUT:3000}
+      # bulkhead (ADR-003): small, bounded pool
+      maximum-pool-size: ${RECORDING_DB_POOL:5}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    locations: classpath:db/migration,classpath:db/common
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    username: ${SPRING_RABBITMQ_USERNAME:medconnect}
+    password: ${SPRING_RABBITMQ_PASSWORD:medconnect}
+    template:
+      observation-enabled: true
+    listener:
+      simple:
+        observation-enabled: true
+        # bulkhead: one consumer and a small prefetch, so the recording workload never hogs the broker or the DB
+        concurrency: 1
+        max-concurrency: 2
+        prefetch: 5
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://identity-service:8080/api/v1/.well-known/jwks.json}
+
+management:
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_ENDPOINT:http://jaeger:4318}/v1/traces
+  tracing:
+    sampling:
+      probability: 1.0
+  observations:
+    enable:
+      spring.security: false  # filter-chain spans are noise in Jaeger
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  # traces only: metrics are scraped by Prometheus, logs are collected by Alloy
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+    json:
+      rename:
+        traceId: trace_id
+        spanId: span_id
+
+medconnect:
+  recording:
+    # HMAC secret shared with the video provider
+    webhook-secret: ${VIDEO_WEBHOOK_SECRET:dev-video-webhook-secret}
+    # promote (copy + verify) attempts before RecordingFailed; each failed attempt answers 503 so the provider retries
+    max-attempts: 3
+    presign-ttl: 300s
+    # PROCESSING (or completed session without any webhook) older than this becomes FAILED
+    processing-timeout: ${RECORDING_PROCESSING_TIMEOUT:30m}
+  storage:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    # host-reachable address, used only to sign download URLs
+    public-url: ${MINIO_PUBLIC_URL:http://localhost:9000}
+    access-key: ${MINIO_ROOT_USER:medconnect}
+    secret-key: ${MINIO_ROOT_PASSWORD:medconnect-secret}
+    bucket: medconnect-recordings
+    region: us-east-1
