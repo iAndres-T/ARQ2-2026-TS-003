@@ -1,0 +1,63 @@
+spring:
+  application:
+    name: pharmacy-provider
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    username: ${SPRING_RABBITMQ_USERNAME:medconnect}
+    password: ${SPRING_RABBITMQ_PASSWORD:medconnect}
+    template:
+      observation-enabled: true
+    listener:
+      simple:
+        observation-enabled: true
+
+medconnect:
+  messaging:
+    # D8: final failures of pharmacy.prescriptions go to the pharmacy DLX fanout (-> pharmacy.prescriptions.dlq
+    # for operator replay and prescription.delivery-failed for prescription-service)
+    dead-letter-exchanges:
+      "[pharmacy.prescriptions]": medconnect.pharmacy.dlx
+
+management:
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_ENDPOINT:http://jaeger:4318}/v1/traces
+  tracing:
+    sampling:
+      probability: 1.0
+  observations:
+    enable:
+      spring.security: false  # filter-chain spans are noise in Jaeger
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  # traces only: metrics are scraped by Prometheus, logs are collected by Alloy
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+    json:
+      rename:
+        # Loki/Grafana correlation (D12): {container="x"} | json | trace_id="..."
+        traceId: trace_id
+        spanId: span_id
