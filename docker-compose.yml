@@ -137,6 +137,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-medconnect}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-medconnect-secret}
       MINIO_CONSOLE_PORT_NUMBER: "9001"
+      MINIO_BROWSER: "on"  # Bitnami defaults the web console (port 9001) to off
     ports: ["9000:9000", "9001:9001"]  # 9000 published so pre-signed URLs work from the host
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
